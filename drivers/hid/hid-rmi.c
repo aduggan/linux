@@ -95,6 +95,7 @@ struct rmi_data {
 	unsigned long flags;
 
 	struct work_struct reset_work;
+	struct work_struct attn_work;
 	struct hid_device *hdev;
 
 	unsigned long device_flags;
@@ -312,22 +313,30 @@ static void rmi_reset_work(struct work_struct *work)
 	rmi_reset_attn_mode(hdata->hdev);
 }
 
-static int rmi_input_event(struct hid_device *hdev, u8 *data, int size)
+static void rmi_attn_work(struct work_struct *work)
 {
-	struct rmi_data *hdata = hid_get_drvdata(hdev);
-	struct rmi_device *rmi_dev = hdata->xport.rmi_dev;
+	struct rmi_data *hdata = container_of(work, struct rmi_data,
+						attn_work);
 	unsigned long flags;
 
-	if (!(test_bit(RMI_STARTED, &hdata->flags)))
-		return 0;
-
 	local_irq_save(flags);
-
-	rmi_set_attn_data(rmi_dev, data[1], &data[2], size - 2);
 
 	generic_handle_irq(hdata->rmi_irq);
 
 	local_irq_restore(flags);
+}
+
+static int rmi_input_event(struct hid_device *hdev, u8 *data, int size)
+{
+	struct rmi_data *hdata = hid_get_drvdata(hdev);
+	struct rmi_device *rmi_dev = hdata->xport.rmi_dev;
+
+	if (!(test_bit(RMI_STARTED, &hdata->flags)))
+		return 0;
+
+	rmi_set_attn_data(rmi_dev, data[1], &data[2], size - 2);
+
+	schedule_work(&hdata->attn_work);
 
 	return 1;
 }
@@ -620,6 +629,7 @@ static int rmi_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		return -ENOMEM;
 
 	INIT_WORK(&data->reset_work, rmi_reset_work);
+	INIT_WORK(&data->attn_work, rmi_attn_work);
 	data->hdev = hdev;
 
 	hid_set_drvdata(hdev, data);
@@ -708,6 +718,7 @@ static void rmi_remove(struct hid_device *hdev)
 
 	clear_bit(RMI_STARTED, &hdata->flags);
 	cancel_work_sync(&hdata->reset_work);
+	cancel_work_sync(&hdata->attn_work);
 	rmi_unregister_transport_device(&hdata->xport);
 
 	hid_hw_stop(hdev);
